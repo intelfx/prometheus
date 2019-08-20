@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math"
 	"net/http"
 	"sync"
@@ -65,7 +66,7 @@ var (
 	targetScrapePools = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "prometheus_target_scrape_pools_total",
-			Help: "Total number of scrape pool creation atttempts.",
+			Help: "Total number of scrape pool creation attempts.",
 		},
 	)
 	targetScrapePoolsFailed = prometheus.NewCounter(
@@ -187,7 +188,7 @@ func newScrapePool(cfg *config.ScrapeConfig, app Appendable, jitterSeed uint64, 
 		logger = log.NewNopLogger()
 	}
 
-	client, err := config_util.NewClientFromConfig(cfg.HTTPClientConfig, cfg.JobName)
+	client, err := config_util.NewClientFromConfig(cfg.HTTPClientConfig, cfg.JobName, false)
 	if err != nil {
 		targetScrapePoolsFailed.Inc()
 		return nil, errors.Wrap(err, "error creating HTTP client")
@@ -285,7 +286,7 @@ func (sp *scrapePool) reload(cfg *config.ScrapeConfig) error {
 	sp.mtx.Lock()
 	defer sp.mtx.Unlock()
 
-	client, err := config_util.NewClientFromConfig(cfg.HTTPClientConfig, cfg.JobName)
+	client, err := config_util.NewClientFromConfig(cfg.HTTPClientConfig, cfg.JobName, false)
 	if err != nil {
 		targetScrapePoolReloadsFailed.Inc()
 		return errors.Wrap(err, "error creating HTTP client")
@@ -448,17 +449,13 @@ func mutateSampleLabels(lset labels.Labels, target *Target, honor bool, rc []*re
 		}
 	} else {
 		for _, l := range target.Labels() {
-			lv := lset.Get(l.Name)
-			if lv != "" {
-				lb.Set(model.ExportedLabelPrefix+l.Name, lv)
-			}
+			// existingValue will be empty if l.Name doesn't exist.
+			existingValue := lset.Get(l.Name)
+			// Because setting a label with an empty value is a no-op,
+			// this will only create the prefixed label if necessary.
+			lb.Set(model.ExportedLabelPrefix+l.Name, existingValue)
+			// It is now safe to set the target label.
 			lb.Set(l.Name, l.Value)
-		}
-	}
-
-	for _, l := range lb.Labels() {
-		if l.Value == "" {
-			lb.Del(l.Name)
 		}
 	}
 
@@ -475,10 +472,7 @@ func mutateReportSampleLabels(lset labels.Labels, target *Target) labels.Labels 
 	lb := labels.NewBuilder(lset)
 
 	for _, l := range target.Labels() {
-		lv := lset.Get(l.Name)
-		if lv != "" {
-			lb.Set(model.ExportedLabelPrefix+l.Name, lv)
-		}
+		lb.Set(model.ExportedLabelPrefix+l.Name, lset.Get(l.Name))
 		lb.Set(l.Name, l.Value)
 	}
 
@@ -543,7 +537,10 @@ func (s *targetScraper) scrape(ctx context.Context, w io.Writer) (string, error)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", errors.Errorf("server returned HTTP status %s", resp.Status)
@@ -928,12 +925,12 @@ mainLoop:
 
 		// A failed scrape is the same as an empty scrape,
 		// we still call sl.append to trigger stale markers.
-		total, added, appErr := sl.append(b, contentType, start)
+		total, added, seriesAdded, appErr := sl.append(b, contentType, start)
 		if appErr != nil {
 			level.Warn(sl.l).Log("msg", "append failed", "err", appErr)
 			// The append failed, probably due to a parse error or sample limit.
 			// Call sl.append again with an empty scrape to trigger stale markers.
-			if _, _, err := sl.append([]byte{}, "", start); err != nil {
+			if _, _, _, err := sl.append([]byte{}, "", start); err != nil {
 				level.Warn(sl.l).Log("msg", "append failed", "err", err)
 			}
 		}
@@ -944,7 +941,7 @@ mainLoop:
 			scrapeErr = appErr
 		}
 
-		if err := sl.report(start, time.Since(start), total, added, scrapeErr); err != nil {
+		if err := sl.report(start, time.Since(start), total, added, seriesAdded, scrapeErr); err != nil {
 			level.Warn(sl.l).Log("msg", "appending scrape report failed", "err", err)
 		}
 		last = start
@@ -1004,7 +1001,7 @@ func (sl *scrapeLoop) endOfRunStaleness(last time.Time, ticker *time.Ticker, int
 	// Call sl.append again with an empty scrape to trigger stale markers.
 	// If the target has since been recreated and scraped, the
 	// stale markers will be out of order and ignored.
-	if _, _, err := sl.append([]byte{}, "", staleTime); err != nil {
+	if _, _, _, err := sl.append([]byte{}, "", staleTime); err != nil {
 		level.Error(sl.l).Log("msg", "stale append failed", "err", err)
 	}
 	if err := sl.reportStale(staleTime); err != nil {
@@ -1019,29 +1016,7 @@ func (sl *scrapeLoop) stop() {
 	<-sl.stopped
 }
 
-type sample struct {
-	metric labels.Labels
-	t      int64
-	v      float64
-}
-
-//lint:ignore U1000 staticcheck falsely reports that samples is unused.
-type samples []sample
-
-func (s samples) Len() int      { return len(s) }
-func (s samples) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
-
-func (s samples) Less(i, j int) bool {
-	d := labels.Compare(s[i].metric, s[j].metric)
-	if d < 0 {
-		return true
-	} else if d > 0 {
-		return false
-	}
-	return s[i].t < s[j].t
-}
-
-func (sl *scrapeLoop) append(b []byte, contentType string, ts time.Time) (total, added int, err error) {
+func (sl *scrapeLoop) append(b []byte, contentType string, ts time.Time) (total, added, seriesAdded int, err error) {
 	var (
 		app            = sl.appender()
 		p              = textparse.New(b, contentType)
@@ -1174,6 +1149,7 @@ loop:
 				sl.cache.trackStaleness(hash, lset)
 			}
 			sl.cache.addRef(mets, ref, lset, hash)
+			seriesAdded++
 		}
 		added++
 	}
@@ -1208,17 +1184,17 @@ loop:
 	}
 	if err != nil {
 		app.Rollback()
-		return total, added, err
+		return total, added, seriesAdded, err
 	}
 	if err := app.Commit(); err != nil {
-		return total, added, err
+		return total, added, seriesAdded, err
 	}
 
 	// Only perform cache cleaning if the scrape was not empty.
 	// An empty scrape (usually) is used to indicate a failed scrape.
 	sl.cache.iterDone(len(b) > 0)
 
-	return total, added, nil
+	return total, added, seriesAdded, nil
 }
 
 func yoloString(b []byte) string {
@@ -1232,9 +1208,10 @@ const (
 	scrapeDurationMetricName     = "scrape_duration_seconds" + "\xff"
 	scrapeSamplesMetricName      = "scrape_samples_scraped" + "\xff"
 	samplesPostRelabelMetricName = "scrape_samples_post_metric_relabeling" + "\xff"
+	scrapeSeriesAddedMetricName  = "scrape_series_added" + "\xff"
 )
 
-func (sl *scrapeLoop) report(start time.Time, duration time.Duration, scraped, appended int, err error) error {
+func (sl *scrapeLoop) report(start time.Time, duration time.Duration, scraped, appended, seriesAdded int, err error) error {
 	sl.scraper.report(start, duration, err)
 
 	ts := timestamp.FromTime(start)
@@ -1261,6 +1238,10 @@ func (sl *scrapeLoop) report(start time.Time, duration time.Duration, scraped, a
 		app.Rollback()
 		return err
 	}
+	if err := sl.addReportSample(app, scrapeSeriesAddedMetricName, ts, float64(seriesAdded)); err != nil {
+		app.Rollback()
+		return err
+	}
 	return app.Commit()
 }
 
@@ -1283,6 +1264,10 @@ func (sl *scrapeLoop) reportStale(start time.Time) error {
 		return err
 	}
 	if err := sl.addReportSample(app, samplesPostRelabelMetricName, ts, stale); err != nil {
+		app.Rollback()
+		return err
+	}
+	if err := sl.addReportSample(app, scrapeSeriesAddedMetricName, ts, stale); err != nil {
 		app.Rollback()
 		return err
 	}

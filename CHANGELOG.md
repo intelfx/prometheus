@@ -1,3 +1,91 @@
+## 2.12.0 / 2019-08-17
+
+* [FEATURE] Track currently active PromQL queries in a log file. #5794
+* [FEATURE] Enable and provide binaries for `mips64` / `mips64le` architectures. #5792
+* [ENHANCEMENT] Improve responsiveness of targets web UI and API endpoint. #5740
+* [ENHANCEMENT] Improve remote write desired shards calculation. #5763
+* [ENHANCEMENT] Flush TSDB pages more precisely. tsdb#660
+* [ENHANCEMENT] Add `prometheus_tsdb_retention_limit_bytes` metric. tsdb#667
+* [ENHANCEMENT] Add logging during TSDB WAL replay on startup. tsdb#662
+* [ENHANCEMENT] Improve TSDB memory usage. tsdb#653, tsdb#643, tsdb#654, tsdb#642, tsdb#627
+* [BUGFIX] Check for duplicate label names in remote read. #5829
+* [BUGFIX] Mark deleted rules' series as stale on next evaluation. #5759
+* [BUGFIX] Fix JavaScript error when showing warning about out-of-sync server time. #5833
+* [BUGFIX] Fix `promtool test rules` panic when providing empty `exp_labels`. #5774
+* [BUGFIX] Only check last directory when discovering checkpoint number. #5756
+* [BUGFIX] Fix error propagation in WAL watcher helper functions. #5741
+* [BUGFIX] Correctly handle empty labels from alert templates. #5845
+
+## 2.11.1 / 2019-07-10
+
+* [BUGFIX] Fix potential panic when prometheus is watching multiple zookeeper paths. #5749
+
+## 2.11.0 / 2019-07-09
+
+* [CHANGE] Remove `max_retries` from queue_config (it has been unused since rewriting remote-write to utilize the write-ahead-log). #5649
+* [CHANGE] The meta file `BlockStats` no longer holds size information. This is now dynamically calculated and kept in memory. It also includes the meta file size which was not included before. tsdb#637
+* [CHANGE] Renamed metric from `prometheus_tsdb_wal_reader_corruption_errors` to `prometheus_tsdb_wal_reader_corruption_errors_total`. tsdb#622
+* [FEATURE] Add option to use Alertmanager API v2. #5482
+* [FEATURE] Added `humanizePercentage` function for templates. #5670
+* [FEATURE] Include InitContainers in Kubernetes Service Discovery. #5598
+* [FEATURE] Provide option to compress WAL records using Snappy. [#609](https://github.com/prometheus/tsdb/pull/609)
+* [ENHANCEMENT] Create new clean segment when starting the WAL. tsdb#608
+* [ENHANCEMENT] Reduce allocations in PromQL aggregations. #5641
+* [ENHANCEMENT] Add storage warnings to LabelValues and LabelNames API results. #5673
+* [ENHANCEMENT] Add `prometheus_http_requests_total` metric. #5640
+* [ENHANCEMENT] Enable openbsd/arm build. #5696
+* [ENHANCEMENT] Remote-write allocation improvements. #5614
+* [ENHANCEMENT] Query performance improvement: Efficient iteration and search in HashForLabels and HashWithoutLabels. #5707
+* [ENHANCEMENT] Allow injection of arbitrary headers in promtool. #4389
+* [ENHANCEMENT] Allow passing `external_labels` in alert unit tests groups. #5608
+* [ENHANCEMENT] Allows globs for rules when unit testing. #5595
+* [ENHANCEMENT] Improved postings intersection matching. tsdb#616
+* [ENHANCEMENT] Reduced disk usage for WAL for small setups. tsdb#605
+* [ENHANCEMENT] Optimize queries using regexp for set lookups. tsdb#602
+* [BUGFIX] resolve race condition in maxGauge. #5647
+* [BUGFIX] Fix ZooKeeper connection leak. #5675
+* [BUGFIX] Improved atomicity of .tmp block replacement during compaction for usual case. tsdb#636
+* [BUGFIX] Fix "unknown series references" after clean shutdown. tsdb#623
+* [BUGFIX] Re-calculate block size when calling `block.Delete`. tsdb#637
+* [BUGFIX] Fix unsafe snapshots with head block. tsdb#641
+* [BUGFIX] `prometheus_tsdb_compactions_failed_total` is now incremented on any compaction failure. tsdb#613
+
+## 2.10.0 / 2019-05-25
+
+* [CHANGE/BUGFIX] API: Encode alert values as string to correctly represent Inf/NaN. #5582
+* [FEATURE] Template expansion: Make external labels available as `$externalLabels` in alert and console template expansion. #5463
+* [FEATURE] TSDB: Add `prometheus_tsdb_wal_segment_current` metric for the WAL segment index that TSDB is currently writing to. tsdb#601
+* [FEATURE] Scrape: Add `scrape_series_added` per-scrape metric. #5546
+* [ENHANCEMENT] Discovery/kubernetes: Add labels `__meta_kubernetes_endpoint_node_name` and `__meta_kubernetes_endpoint_hostname`. #5571
+* [ENHANCEMENT] Discovery/azure: Add label `__meta_azure_machine_public_ip`. #5475
+* [ENHANCEMENT] TSDB: Simplify mergedPostings.Seek, resulting in better performance if there are many posting lists. tsdb#595
+* [ENHANCEMENT] Log filesystem type on startup. #5558
+* [ENHANCEMENT] Cmd/promtool: Use POST requests for Query and QueryRange. client_golang#557
+* [ENHANCEMENT] Web: Sort alerts by group name. #5448
+* [ENHANCEMENT] Console templates: Add convenience variables `$rawParams`, `$params`, `$path`. #5463
+* [BUGFIX] TSDB: Don't panic when running out of disk space and recover nicely from the condition. tsdb#582
+* [BUGFIX] TSDB: Correctly handle empty labels. tsdb#594
+* [BUGFIX] TSDB: Don't crash on an unknown tombstone reference. tsdb#604
+* [BUGFIX] Storage/remote: Remove queue-manager specific metrics if queue no longer exists. #5445 #5485 #5555
+* [BUGFIX] PromQL: Correctly display `{__name__="a"}`. #5552
+* [BUGFIX] Discovery/kubernetes: Use `service` rather than `ingress` as the name for the service workqueue. #5520
+* [BUGFIX] Discovery/azure: Don't panic on a VM with a public IP. #5587
+* [BUGFIX] Discovery/triton: Always read HTTP body to completion. #5596
+* [BUGFIX] Web: Fixed Content-Type for js and css instead of using `/etc/mime.types`. #5551
+
+## 2.9.2 / 2019-04-24
+
+* [BUGFIX] Make sure subquery range is taken into account for selection #5467
+* [BUGFIX] Exhaust every request body before closing it #5166
+* [BUGFIX] Cmd/promtool: return errors from rule evaluations #5483
+* [BUGFIX] Remote Storage: string interner should not panic in release #5487
+* [BUGFIX] Fix memory allocation regression in mergedPostings.Seek tsdb#586
+
+## 2.9.1 / 2019-04-16
+
+* [BUGFIX] Discovery/kubernetes: fix missing label sanitization #5462
+* [BUGFIX] Remote_write: Prevent reshard concurrent with calling stop #5460
+
 ## 2.9.0 / 2019-04-15
 
 This releases uses Go 1.12, which includes a change in how memory is released

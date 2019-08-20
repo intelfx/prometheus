@@ -28,9 +28,9 @@ import (
 	"github.com/go-kit/kit/log/level"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/tsdb"
-	"github.com/prometheus/tsdb/fileutil"
-	"github.com/prometheus/tsdb/wal"
+	"github.com/prometheus/prometheus/tsdb"
+	"github.com/prometheus/prometheus/tsdb/fileutil"
+	"github.com/prometheus/prometheus/tsdb/wal"
 
 	"github.com/prometheus/prometheus/pkg/timestamp"
 )
@@ -78,6 +78,7 @@ var (
 		},
 		[]string{queue},
 	)
+	liveReaderMetrics = wal.NewLiveReaderMetrics(prometheus.DefaultRegisterer)
 )
 
 func init() {
@@ -128,18 +129,25 @@ func NewWALWatcher(logger log.Logger, name string, writer writeTo, walDir string
 		quit:   make(chan struct{}),
 		done:   make(chan struct{}),
 
-		recordsReadMetric:       watcherRecordsRead.MustCurryWith(prometheus.Labels{queue: name}),
-		recordDecodeFailsMetric: watcherRecordDecodeFails.WithLabelValues(name),
-		samplesSentPreTailing:   watcherSamplesSentPreTailing.WithLabelValues(name),
-		currentSegmentMetric:    watcherCurrentSegment.WithLabelValues(name),
-
 		maxSegment: -1,
 	}
 }
 
+func (w *WALWatcher) setMetrics() {
+	// Setup the WAL Watchers metrics. We do this here rather than in the
+	// constructor because of the ordering of creating Queue Managers's,
+	// stopping them, and then starting new ones in storage/remote/storage.go ApplyConfig.
+	w.recordsReadMetric = watcherRecordsRead.MustCurryWith(prometheus.Labels{queue: w.name})
+	w.recordDecodeFailsMetric = watcherRecordDecodeFails.WithLabelValues(w.name)
+	w.samplesSentPreTailing = watcherSamplesSentPreTailing.WithLabelValues(w.name)
+	w.currentSegmentMetric = watcherCurrentSegment.WithLabelValues(w.name)
+}
+
 // Start the WALWatcher.
 func (w *WALWatcher) Start() {
+	w.setMetrics()
 	level.Info(w.logger).Log("msg", "starting WAL watcher", "queue", w.name)
+
 	go w.loop()
 }
 
@@ -147,13 +155,21 @@ func (w *WALWatcher) Start() {
 func (w *WALWatcher) Stop() {
 	close(w.quit)
 	<-w.done
+
+	// Records read metric has series and samples.
+	watcherRecordsRead.DeleteLabelValues(w.name, "series")
+	watcherRecordsRead.DeleteLabelValues(w.name, "samples")
+	watcherRecordDecodeFails.DeleteLabelValues(w.name)
+	watcherSamplesSentPreTailing.DeleteLabelValues(w.name)
+	watcherCurrentSegment.DeleteLabelValues(w.name)
+
 	level.Info(w.logger).Log("msg", "WAL watcher stopped", "queue", w.name)
 }
 
 func (w *WALWatcher) loop() {
 	defer close(w.done)
 
-	// We may encourter failures processing the WAL; we should wait and retry.
+	// We may encounter failures processing the WAL; we should wait and retry.
 	for !isClosed(w.quit) {
 		w.startTime = timestamp.FromTime(time.Now())
 		if err := w.run(); err != nil {
@@ -218,7 +234,7 @@ func (w *WALWatcher) run() error {
 func (w *WALWatcher) findSegmentForIndex(index int) (int, error) {
 	refs, err := w.segments(w.walDir)
 	if err != nil {
-		return -1, nil
+		return -1, err
 	}
 
 	for _, r := range refs {
@@ -233,7 +249,7 @@ func (w *WALWatcher) findSegmentForIndex(index int) (int, error) {
 func (w *WALWatcher) firstAndLast() (int, int, error) {
 	refs, err := w.segments(w.walDir)
 	if err != nil {
-		return -1, -1, nil
+		return -1, -1, err
 	}
 
 	if len(refs) == 0 {
@@ -278,7 +294,7 @@ func (w *WALWatcher) watch(segmentNum int, tail bool) error {
 	}
 	defer segment.Close()
 
-	reader := wal.NewLiveReader(w.logger, segment)
+	reader := wal.NewLiveReader(w.logger, liveReaderMetrics, segment)
 
 	readTicker := time.NewTicker(readPeriod)
 	defer readTicker.Stop()
@@ -403,6 +419,7 @@ func (w *WALWatcher) readSegment(r *wal.LiveReader, segmentNum int, tail bool) e
 		dec     tsdb.RecordDecoder
 		series  []tsdb.RefSeries
 		samples []tsdb.RefSample
+		send    []tsdb.RefSample
 	)
 
 	for r.Next() && !isClosed(w.quit) {
@@ -429,7 +446,6 @@ func (w *WALWatcher) readSegment(r *wal.LiveReader, segmentNum int, tail bool) e
 				w.recordDecodeFailsMetric.Inc()
 				return err
 			}
-			var send []tsdb.RefSample
 			for _, s := range samples {
 				if s.T > w.startTime {
 					send = append(send, s)
@@ -438,6 +454,7 @@ func (w *WALWatcher) readSegment(r *wal.LiveReader, segmentNum int, tail bool) e
 			if len(send) > 0 {
 				// Blocks  until the sample is sent to all remote write endpoints or closed (because enqueue blocks).
 				w.writer.Append(send)
+				send = send[:0]
 			}
 
 		case tsdb.RecordTombstones:
@@ -493,7 +510,7 @@ func (w *WALWatcher) readCheckpoint(checkpointDir string) error {
 		}
 		defer sr.Close()
 
-		r := wal.NewLiveReader(w.logger, sr)
+		r := wal.NewLiveReader(w.logger, liveReaderMetrics, sr)
 		if err := w.readSegment(r, index, false); err != io.EOF && err != nil {
 			return errors.Wrap(err, "readSegment")
 		}
@@ -509,7 +526,8 @@ func (w *WALWatcher) readCheckpoint(checkpointDir string) error {
 
 func checkpointNum(dir string) (int, error) {
 	// Checkpoint dir names are in the format checkpoint.000001
-	chunks := strings.Split(dir, ".")
+	// dir may contain a hidden directory, so only check the base directory
+	chunks := strings.Split(path.Base(dir), ".")
 	if len(chunks) != 2 {
 		return 0, errors.Errorf("invalid checkpoint dir string: %s", dir)
 	}

@@ -50,7 +50,7 @@ type Target struct {
 	discoveredLabels labels.Labels
 	// Any labels that are added to this target and its metrics.
 	labels labels.Labels
-	// Additional URL parmeters that are part of the target URL.
+	// Additional URL parameters that are part of the target URL.
 	params url.Values
 
 	mtx                sync.RWMutex
@@ -118,7 +118,9 @@ func (t *Target) setMetadataStore(s metricMetadataStore) {
 // hash returns an identifying hash for the target.
 func (t *Target) hash() uint64 {
 	h := fnv.New64a()
+	//nolint: errcheck
 	h.Write([]byte(fmt.Sprintf("%016d", t.labels.Hash())))
+	//nolint: errcheck
 	h.Write([]byte(t.URL().String()))
 
 	return h.Sum64()

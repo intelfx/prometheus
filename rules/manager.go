@@ -38,7 +38,7 @@ import (
 	"github.com/prometheus/prometheus/storage"
 )
 
-// RuleHealth describes the health state of a target.
+// RuleHealth describes the health state of a rule.
 type RuleHealth string
 
 // The possible health states of a rule based on the last execution.
@@ -73,15 +73,16 @@ type Metrics struct {
 	groupRules          *prometheus.GaugeVec
 }
 
-// NewGroupMetrics makes a new Metrics and registers them with then provided registerer,
+// NewGroupMetrics makes a new Metrics and registers them with the provided registerer,
 // if not nil.
 func NewGroupMetrics(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{
 		evalDuration: prometheus.NewSummary(
 			prometheus.SummaryOpts{
-				Namespace: namespace,
-				Name:      "rule_evaluation_duration_seconds",
-				Help:      "The duration for a rule to execute.",
+				Namespace:  namespace,
+				Name:       "rule_evaluation_duration_seconds",
+				Help:       "The duration for a rule to execute.",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
 			}),
 		evalFailures: prometheus.NewCounter(
 			prometheus.CounterOpts{
@@ -222,6 +223,7 @@ type Group struct {
 	interval             time.Duration
 	rules                []Rule
 	seriesInPreviousEval []map[string]labels.Labels // One per Rule.
+	staleSeries          []labels.Labels
 	opts                 *ManagerOptions
 	mtx                  sync.Mutex
 	evaluationDuration   time.Duration
@@ -355,10 +357,42 @@ func (g *Group) stop() {
 
 func (g *Group) hash() uint64 {
 	l := labels.New(
-		labels.Label{"name", g.name},
-		labels.Label{"file", g.file},
+		labels.Label{Name: "name", Value: g.name},
+		labels.Label{Name: "file", Value: g.file},
 	)
 	return l.Hash()
+}
+
+// AlertingRules returns the list of the group's alerting rules.
+func (g *Group) AlertingRules() []*AlertingRule {
+	g.mtx.Lock()
+	defer g.mtx.Unlock()
+
+	var alerts []*AlertingRule
+	for _, rule := range g.rules {
+		if alertingRule, ok := rule.(*AlertingRule); ok {
+			alerts = append(alerts, alertingRule)
+		}
+	}
+	sort.Slice(alerts, func(i, j int) bool {
+		return alerts[i].State() > alerts[j].State() ||
+			(alerts[i].State() == alerts[j].State() &&
+				alerts[i].Name() < alerts[j].Name())
+	})
+	return alerts
+}
+
+// HasAlertingRules returns true if the group contains at least one AlertingRule.
+func (g *Group) HasAlertingRules() bool {
+	g.mtx.Lock()
+	defer g.mtx.Unlock()
+
+	for _, rule := range g.rules {
+		if _, ok := rule.(*AlertingRule); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // GetEvaluationDuration returns the time in seconds it took to evaluate the rule group.
@@ -445,6 +479,18 @@ func (g *Group) CopyState(from *Group) {
 
 		for fp, a := range far.active {
 			ar.active[fp] = a
+		}
+	}
+
+	// Handle deleted and unmatched duplicate rules.
+	g.staleSeries = from.staleSeries
+	for fi, fromRule := range from.rules {
+		nameAndLabels := nameAndLabels(fromRule)
+		l := ruleMap[nameAndLabels]
+		if len(l) != 0 {
+			for _, series := range from.seriesInPreviousEval[fi] {
+				g.staleSeries = append(g.staleSeries, series)
+			}
 		}
 	}
 }
@@ -542,6 +588,32 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 			}
 		}(i, rule)
 	}
+
+	if len(g.staleSeries) != 0 {
+		app, err := g.opts.Appendable.Appender()
+		if err != nil {
+			level.Warn(g.logger).Log("msg", "creating appender failed", "err", err)
+			return
+		}
+		for _, s := range g.staleSeries {
+			// Rule that produced series no longer configured, mark it stale.
+			_, err = app.Add(s, timestamp.FromTime(ts), math.Float64frombits(value.StaleNaN))
+			switch err {
+			case nil:
+			case storage.ErrOutOfOrderSample, storage.ErrDuplicateSampleForTimestamp:
+				// Do not count these in logging, as this is expected if series
+				// is exposed from a different rule.
+			default:
+				level.Warn(g.logger).Log("msg", "adding stale sample for previous configuration failed", "sample", s, "err", err)
+			}
+		}
+		if err := app.Commit(); err != nil {
+			level.Warn(g.logger).Log("msg", "stale sample appending for previous configuration failed", "err", err)
+		} else {
+			g.staleSeries = nil
+		}
+	}
+
 }
 
 // RestoreForState restores the 'for' state of the alerts
@@ -751,11 +823,11 @@ func (m *Manager) Stop() {
 
 // Update the rule manager's state as the config requires. If
 // loading the new rules failed the old rule set is restored.
-func (m *Manager) Update(interval time.Duration, files []string) error {
+func (m *Manager) Update(interval time.Duration, files []string, externalLabels labels.Labels) error {
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
 
-	groups, errs := m.LoadGroups(interval, files...)
+	groups, errs := m.LoadGroups(interval, externalLabels, files...)
 	if errs != nil {
 		for _, e := range errs {
 			level.Error(m.logger).Log("msg", "loading groups failed", "err", e)
@@ -803,7 +875,9 @@ func (m *Manager) Update(interval time.Duration, files []string) error {
 }
 
 // LoadGroups reads groups from a list of files.
-func (m *Manager) LoadGroups(interval time.Duration, filenames ...string) (map[string]*Group, []error) {
+func (m *Manager) LoadGroups(
+	interval time.Duration, externalLabels labels.Labels, filenames ...string,
+) (map[string]*Group, []error) {
 	groups := make(map[string]*Group)
 
 	shouldRestore := !m.restored
@@ -834,6 +908,7 @@ func (m *Manager) LoadGroups(interval time.Duration, filenames ...string) (map[s
 						time.Duration(r.For),
 						labels.FromMap(r.Labels),
 						labels.FromMap(r.Annotations),
+						externalLabels,
 						m.restored,
 						log.With(m.logger, "alert", r.Alert),
 					))
@@ -868,7 +943,6 @@ func (m *Manager) RuleGroups() []*Group {
 		rgs = append(rgs, g)
 	}
 
-	// Sort rule groups by file, then by name.
 	sort.Slice(rgs, func(i, j int) bool {
 		if rgs[i].file != rgs[j].file {
 			return rgs[i].file < rgs[j].file
@@ -903,6 +977,7 @@ func (m *Manager) AlertingRules() []*AlertingRule {
 			alerts = append(alerts, alertingRule)
 		}
 	}
+
 	return alerts
 }
 
