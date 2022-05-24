@@ -147,6 +147,14 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 	)
 
 	points := samples.Points
+
+	if len(points) == 1 {
+		injectedT := points[0].T - 1
+		if injectedT < 0 {
+			injectedT = 0
+		}
+		points = append([]Point{{T: injectedT, V: 0}}, points...)
+	}
 	if len(points) < 2 {
 		return enh.Out
 	}
