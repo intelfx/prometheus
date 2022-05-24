@@ -127,6 +127,19 @@ eval instant at 49s xrate(http_requests[10s])
   {path="/foo"} .1
   {path="/bar"} 0.2
 
+# xincrease injects a zero if there is only one sample in the given timerange.
+eval instant at 1s xincrease(http_requests[5s])
+  {path="/foo"} 1
+  {path="/bar"} 1
+
+
+
+# xincrease does not inject anything at the end of the given timerange if there are
+# two or more samples.
+eval instant at 55s xincrease(http_requests[10s])
+  {path="/foo"} 0
+  {path="/bar"} 1
+
 clear
 
 
