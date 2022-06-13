@@ -786,12 +786,22 @@ func (ng *Engine) populateSeries(querier storage.Querier, s *parser.EvalStmt) {
 		switch n := node.(type) {
 		case *parser.VectorSelector:
 			start, end := ng.getTimeRangesForSelector(s, n, path, evalRange)
+			fn := extractFuncFromPath(path)
+
+			// Buffer more so that we could reasonably
+			// inject a zero if there is only one point.
+			if fn == "xincrease" {
+				start -= durationMilliseconds(4 * 24 * time.Hour)
+				if start < 0 {
+					start = 0
+				}
+			}
 			hints := &storage.SelectHints{
 				Start: start,
 				End:   end,
 				Step:  durationMilliseconds(s.Interval),
 				Range: durationMilliseconds(evalRange),
-				Func:  extractFuncFromPath(path),
+				Func:  fn,
 			}
 			evalRange = 0
 			hints.By, hints.Grouping = extractGroupsFromPath(path)
@@ -966,6 +976,9 @@ type EvalNodeHelper struct {
 	rightSigs    map[string]Sample
 	matchedSigs  map[string]map[uint64]struct{}
 	resultMetric map[string]labels.Labels
+
+	metricAppeared int64
+	seriesName     string
 }
 
 // DropMetricName is a cached version of DropMetricName.
@@ -1317,6 +1330,10 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 			bufferRange += durationMilliseconds(ev.lookbackDelta)
 			stepRange += durationMilliseconds(ev.lookbackDelta)
 		}
+
+		if e.Func.Name == "xincrease" {
+			bufferRange += durationMilliseconds(4 * 24 * time.Hour)
+		}
 		// Reuse objects across steps to save memory allocations.
 		points := getPointSlice(16)
 		inMatrix := make(Matrix, 1)
@@ -1325,6 +1342,7 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 		// Process all the calls for one time series at a time.
 		it := storage.NewBuffer(bufferRange)
 		for i, s := range selVS.Series {
+			enh.metricAppeared = -1
 			ev.currentSamples -= len(points)
 			points = points[:0]
 			it.Reset(s.Iterator())
@@ -1351,16 +1369,46 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 						otherInArgs[j][0].V = otherArgs[j][0].Points[step].V
 					}
 				}
+
+				// mint is ev.startTimestamp - 4 * 24 * time.Hour
+				// to include more points.
 				maxt := ts - offset
-				mint := maxt - selRange
+
+				var mint int64
+				// Initially buffer +4 days for xincrease.
+				if step == 0 && e.Func.Name == "xincrease" {
+					mint = ev.startTimestamp - durationMilliseconds(4*24*time.Hour)
+				} else {
+					mint = maxt - selRange
+				}
+
+				var metricAppeared int64 = -1
 				// Evaluate the matrix selector for this series for this step.
-				points = ev.matrixIterSlice(it, mint, maxt, e.Func.ExtRange, points)
+				points = ev.matrixIterSlice(it, mint, maxt, e.Func.ExtRange, points, &metricAppeared)
 				if len(points) == 0 {
+					enh.metricAppeared = -1
 					continue
 				}
+				if enh.metricAppeared == -1 && metricAppeared != -1 {
+					enh.metricAppeared = metricAppeared
+				}
+
+				// Include at least one point outside of the range.
+				if e.Func.Name == "xincrease" {
+					until := maxt - selRange
+					for pi := len(points) - 1; pi >= 0; pi-- {
+						if points[pi].T < until {
+							points = points[pi:]
+							break
+						}
+					}
+				}
+
 				inMatrix[0].Points = points
 				enh.Ts = ts
 				// Make the function call.
+				enh.seriesName = s.Labels().String()
+
 				outVec := call(inArgs, e.Args, enh)
 				enh.Out = outVec[:0]
 				if len(outVec) > 0 {
@@ -1728,7 +1776,7 @@ func (ev *evaluator) matrixSelector(node *parser.MatrixSelector) (Matrix, storag
 			Metric: series[i].Labels(),
 		}
 
-		ss.Points = ev.matrixIterSlice(it, mint, maxt, false, getPointSlice(16))
+		ss.Points = ev.matrixIterSlice(it, mint, maxt, false, getPointSlice(16), nil)
 
 		if len(ss.Points) > 0 {
 			matrix = append(matrix, ss)
@@ -1747,7 +1795,7 @@ func (ev *evaluator) matrixSelector(node *parser.MatrixSelector) (Matrix, storag
 // values). Any such points falling before mint are discarded; points that fall
 // into the [mint, maxt] range are retained; only points with later timestamps
 // are populated from the iterator.
-func (ev *evaluator) matrixIterSlice(it *storage.BufferedSeriesIterator, mint, maxt int64, extRange bool, out []Point) []Point {
+func (ev *evaluator) matrixIterSlice(it *storage.BufferedSeriesIterator, mint, maxt int64, extRange bool, out []Point, metricAppeared *int64) []Point {
 	extMint := mint - durationMilliseconds(ev.lookbackDelta)
 	if len(out) > 0 && out[len(out)-1].T >= mint {
 		// There is an overlap between previous and current ranges, retain common
@@ -1796,6 +1844,9 @@ func (ev *evaluator) matrixIterSlice(it *storage.BufferedSeriesIterator, mint, m
 		t, v := buf.At()
 		if value.IsStaleNaN(v) {
 			continue
+		}
+		if metricAppeared != nil && *metricAppeared == -1 {
+			*metricAppeared = t
 		}
 		if !extRange {
 			// Values in the buffer are guaranteed to be smaller than maxt.

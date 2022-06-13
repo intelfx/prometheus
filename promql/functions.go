@@ -147,17 +147,25 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 	)
 
 	points := samples.Points
-
-	if len(points) == 1 {
-		injectedT := points[0].T - 1
-		if injectedT < 0 {
-			injectedT = 0
-		}
-		points = append([]Point{{T: injectedT, V: 0}}, points...)
-	}
-	if len(points) < 2 {
+	if len(points) == 0 {
 		return enh.Out
 	}
+
+	sameVals := true
+	for i := range points {
+		if i > 0 && points[i-1].V != points[i].V {
+			sameVals = false
+			break
+		}
+	}
+
+	until := enh.metricAppeared + durationMilliseconds(ms.Range)
+	if enh.Ts <= until && isCounter && !isRate && sameVals {
+		return append(enh.Out, Sample{
+			Point: Point{V: points[0].V},
+		})
+	}
+
 	sampledRange := float64(points[len(points)-1].T - points[0].T)
 	averageInterval := sampledRange / float64(len(points)-1)
 
