@@ -1384,24 +1384,13 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 
 				var metricAppeared int64 = -1
 				// Evaluate the matrix selector for this series for this step.
-				points = ev.matrixIterSlice(it, mint, maxt, e.Func.ExtRange, points, &metricAppeared)
+				points = ev.matrixIterSlice(it, mint, maxt, e.Func.ExtRange, points, &metricAppeared, e.Func.Name)
 				if len(points) == 0 {
 					enh.metricAppeared = -1
 					continue
 				}
 				if enh.metricAppeared == -1 && metricAppeared != -1 {
 					enh.metricAppeared = metricAppeared
-				}
-
-				// Include at least one point outside of the range.
-				if e.Func.Name == "xincrease" {
-					until := maxt - selRange
-					for pi := len(points) - 1; pi >= 0; pi-- {
-						if points[pi].T < until {
-							points = points[pi:]
-							break
-						}
-					}
 				}
 
 				inMatrix[0].Points = points
@@ -1415,7 +1404,9 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 					ss.Points = append(ss.Points, Point{V: outVec[0].Point.V, T: ts})
 				}
 				// Only buffer stepRange milliseconds from the second step on.
-				it.ReduceDelta(stepRange)
+				if e.Func.Name != "xincrease" {
+					it.ReduceDelta(stepRange)
+				}
 			}
 			if len(ss.Points) > 0 {
 				if ev.currentSamples+len(ss.Points) <= ev.maxSamples {
@@ -1776,7 +1767,7 @@ func (ev *evaluator) matrixSelector(node *parser.MatrixSelector) (Matrix, storag
 			Metric: series[i].Labels(),
 		}
 
-		ss.Points = ev.matrixIterSlice(it, mint, maxt, false, getPointSlice(16), nil)
+		ss.Points = ev.matrixIterSlice(it, mint, maxt, false, getPointSlice(16), nil, "")
 
 		if len(ss.Points) > 0 {
 			matrix = append(matrix, ss)
@@ -1795,8 +1786,14 @@ func (ev *evaluator) matrixSelector(node *parser.MatrixSelector) (Matrix, storag
 // values). Any such points falling before mint are discarded; points that fall
 // into the [mint, maxt] range are retained; only points with later timestamps
 // are populated from the iterator.
-func (ev *evaluator) matrixIterSlice(it *storage.BufferedSeriesIterator, mint, maxt int64, extRange bool, out []Point, metricAppeared *int64) []Point {
-	extMint := mint - durationMilliseconds(ev.lookbackDelta)
+func (ev *evaluator) matrixIterSlice(it *storage.BufferedSeriesIterator, mint, maxt int64, extRange bool, out []Point, metricAppeared *int64, functionName string) []Point {
+	var extMint int64
+	if functionName == "xincrease" {
+		extMint = mint - durationMilliseconds(4*24*time.Hour)
+	} else {
+		extMint = mint - durationMilliseconds(ev.lookbackDelta)
+	}
+
 	if len(out) > 0 && out[len(out)-1].T >= mint {
 		// There is an overlap between previous and current ranges, retain common
 		// points. In most such cases:
