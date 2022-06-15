@@ -250,14 +250,17 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 	averageInterval := sampledRange / float64(len(points)-1)
 
 	firstPoint := 0
-	// If the point before the range is too far from rangeStart, drop it.
-	if float64(rangeStart-points[0].T) > averageInterval {
-		if len(points) < 3 {
-			return enh.Out
+	// Only do this for not xincrease.
+	if !(isCounter && !isRate) {
+		// If the point before the range is too far from rangeStart, drop it.
+		if float64(rangeStart-points[0].T) > averageInterval {
+			if len(points) < 3 {
+				return enh.Out
+			}
+			firstPoint = 1
+			sampledRange = float64(points[len(points)-1].T - points[1].T)
+			averageInterval = sampledRange / float64(len(points)-2)
 		}
-		firstPoint = 1
-		sampledRange = float64(points[len(points)-1].T - points[1].T)
-		averageInterval = sampledRange / float64(len(points)-2)
 	}
 
 	var (
@@ -281,9 +284,13 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 	// If the points cover the whole range (i.e. they start just before the
 	// range start and end just before the range end) adjust the value from
 	// the sampled range to the requested range.
-	if points[firstPoint].T <= rangeStart && durationToEnd < averageInterval {
-		adjustToRange := float64(durationMilliseconds(ms.Range))
-		resultValue = resultValue * (adjustToRange / sampledRange)
+	// Only do this for not xincrease.
+	if !(isCounter && !isRate) {
+		if points[firstPoint].T <= rangeStart && durationToEnd < averageInterval {
+			adjustToRange := float64(durationMilliseconds(ms.Range))
+			resultValue = resultValue * (adjustToRange / sampledRange)
+		}
+
 	}
 
 	if isRate {
