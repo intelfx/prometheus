@@ -978,7 +978,6 @@ type EvalNodeHelper struct {
 	resultMetric map[string]labels.Labels
 
 	metricAppeared int64
-	seriesName     string
 }
 
 // DropMetricName is a cached version of DropMetricName.
@@ -1370,17 +1369,8 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 					}
 				}
 
-				// mint is ev.startTimestamp - 4 * 24 * time.Hour
-				// to include more points.
 				maxt := ts - offset
-
-				var mint int64
-				// Initially buffer +4 days for xincrease.
-				if step == 0 && e.Func.Name == "xincrease" {
-					mint = ev.startTimestamp - durationMilliseconds(4*24*time.Hour)
-				} else {
-					mint = maxt - selRange
-				}
+				mint := maxt - selRange
 
 				var metricAppeared int64 = -1
 				// Evaluate the matrix selector for this series for this step.
@@ -1396,8 +1386,6 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 				inMatrix[0].Points = points
 				enh.Ts = ts
 				// Make the function call.
-				enh.seriesName = s.Labels().String()
-
 				outVec := call(inArgs, e.Args, enh)
 				enh.Out = outVec[:0]
 				if len(outVec) > 0 {
