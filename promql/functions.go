@@ -147,29 +147,40 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 	)
 
 	points := samples.Points
-
-	if len(points) == 1 {
-		injectedT := points[0].T - 1
-		if injectedT < 0 {
-			injectedT = 0
-		}
-		points = append([]Point{{T: injectedT, V: 0}}, points...)
-	}
-	if len(points) < 2 {
+	if len(points) == 0 {
 		return enh.Out
 	}
+
+	sameVals := true
+	for i := range points {
+		if i > 0 && points[i-1].V != points[i].V {
+			sameVals = false
+			break
+		}
+	}
+
+	until := enh.metricAppeared + durationMilliseconds(ms.Range)
+	if enh.Ts <= until && isCounter && !isRate && sameVals {
+		return append(enh.Out, Sample{
+			Point: Point{V: points[0].V},
+		})
+	}
+
 	sampledRange := float64(points[len(points)-1].T - points[0].T)
 	averageInterval := sampledRange / float64(len(points)-1)
 
 	firstPoint := 0
-	// If the point before the range is too far from rangeStart, drop it.
-	if float64(rangeStart-points[0].T) > averageInterval {
-		if len(points) < 3 {
-			return enh.Out
+	// Only do this for not xincrease.
+	if !(isCounter && !isRate) {
+		// If the point before the range is too far from rangeStart, drop it.
+		if float64(rangeStart-points[0].T) > averageInterval {
+			if len(points) < 3 {
+				return enh.Out
+			}
+			firstPoint = 1
+			sampledRange = float64(points[len(points)-1].T - points[1].T)
+			averageInterval = sampledRange / float64(len(points)-2)
 		}
-		firstPoint = 1
-		sampledRange = float64(points[len(points)-1].T - points[1].T)
-		averageInterval = sampledRange / float64(len(points)-2)
 	}
 
 	var (
@@ -193,9 +204,13 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 	// If the points cover the whole range (i.e. they start just before the
 	// range start and end just before the range end) adjust the value from
 	// the sampled range to the requested range.
-	if points[firstPoint].T <= rangeStart && durationToEnd < averageInterval {
-		adjustToRange := float64(durationMilliseconds(ms.Range))
-		resultValue = resultValue * (adjustToRange / sampledRange)
+	// Only do this for not xincrease.
+	if !(isCounter && !isRate) {
+		if points[firstPoint].T <= rangeStart && durationToEnd < averageInterval {
+			adjustToRange := float64(durationMilliseconds(ms.Range))
+			resultValue = resultValue * (adjustToRange / sampledRange)
+		}
+
 	}
 
 	if isRate {
