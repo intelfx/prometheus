@@ -240,10 +240,12 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 	}
 
 	until := enh.metricAppeared + durationMilliseconds(ms.Range)
-	if enh.Ts <= until && isCounter && !isRate && sameVals {
-		return append(enh.Out, Sample{
-			Point: Point{V: points[0].V},
-		})
+	if isCounter && !isRate && sameVals && enh.metricAppeared != -1 {
+		if enh.Ts-durationMilliseconds(vs.Offset) <= until || (vs.Timestamp != nil && *vs.Timestamp <= until) {
+			return append(enh.Out, Sample{
+				Point: Point{V: points[0].V},
+			})
+		}
 	}
 
 	sampledRange := float64(points[len(points)-1].T - points[0].T)
@@ -290,7 +292,6 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 			adjustToRange := float64(durationMilliseconds(ms.Range))
 			resultValue = resultValue * (adjustToRange / sampledRange)
 		}
-
 	}
 
 	if isRate {

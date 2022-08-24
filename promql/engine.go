@@ -1493,9 +1493,7 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 					ss.Points = append(ss.Points, Point{V: outVec[0].Point.V, H: outVec[0].Point.H, T: ts})
 				}
 				// Only buffer stepRange milliseconds from the second step on.
-				if e.Func.Name != "xincrease" {
-					it.ReduceDelta(stepRange)
-				}
+				it.ReduceDelta(stepRange)
 			}
 			if len(ss.Points) > 0 {
 				if ev.currentSamples+len(ss.Points) <= ev.maxSamples {
