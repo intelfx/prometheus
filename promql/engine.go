@@ -849,7 +849,7 @@ func (ng *Engine) populateSeries(querier storage.Querier, s *parser.EvalStmt) {
 			// Buffer more so that we could reasonably
 			// inject a zero if there is only one point.
 			if fn == "xincrease" {
-				start -= durationMilliseconds(4 * 24 * time.Hour)
+				start -= durationMilliseconds(1 * 24 * time.Hour)
 				if start < 0 {
 					start = 0
 				}
@@ -1406,7 +1406,7 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 		}
 
 		if e.Func.Name == "xincrease" {
-			bufferRange += durationMilliseconds(4 * 24 * time.Hour)
+			bufferRange += durationMilliseconds(1 * 24 * time.Hour)
 		}
 		// Reuse objects across steps to save memory allocations.
 		points := getPointSlice(16)
