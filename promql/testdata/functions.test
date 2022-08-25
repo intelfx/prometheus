@@ -239,10 +239,9 @@ eval instant at 50s xincrease(http_requests[5s])
 	{path="/bar"} 10
 
 eval instant at 50s xincrease(http_requests[3s])
-	{path="/foo"} 6
-	{path="/bar"} 6
+	{path="/foo"} 10
+	{path="/bar"} 10
 
-eval instant at 49s xincrease(http_requests[3s])
 
 # Tests for xrate().
 eval instant at 50s xrate(http_requests[50s])
@@ -260,8 +259,6 @@ eval instant at 50s xrate(http_requests[5s])
 eval instant at 50s xrate(http_requests[3s])
 	{path="/foo"} 2
 	{path="/bar"} 2
-
-eval instant at 49s xrate(http_requests[3s])
 
 clear
 
