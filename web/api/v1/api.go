@@ -713,6 +713,10 @@ var (
 	maxTimeFormatted = maxTime.Format(time.RFC3339Nano)
 )
 
+type seriesOnlyCountResult struct {
+	MetricsCount uint64 `json:"metrics_count"`
+}
+
 func (api *API) series(r *http.Request) (result apiFuncResult) {
 	if err := r.ParseForm(); err != nil {
 		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrapf(err, "error parsing form values")}, nil, nil}
@@ -765,6 +769,22 @@ func (api *API) series(r *http.Request) (result apiFuncResult) {
 	}
 
 	set := storage.NewMergeSeriesSet(sets, storage.ChainedSeriesMerge)
+
+	if r.Form.Get("only_count") == "1" {
+		var count uint64
+
+		for set.Next() {
+			count++
+		}
+
+		warnings := set.Warnings()
+		if set.Err() != nil {
+			return apiFuncResult{nil, &apiError{errorExec, set.Err()}, warnings, closer}
+		}
+
+		return apiFuncResult{seriesOnlyCountResult{MetricsCount: count}, nil, warnings, closer}
+
+	}
 	metrics := []labels.Labels{}
 	for set.Next() {
 		metrics = append(metrics, set.At().Labels())
@@ -1652,11 +1672,12 @@ func marshalPointJSONIsEmpty(ptr unsafe.Pointer) bool {
 }
 
 // marshalExemplarJSON writes.
-// {
-//    labels: <labels>,
-//    value: "<string>",
-//    timestamp: <float>
-// }
+//
+//	{
+//	   labels: <labels>,
+//	   value: "<string>",
+//	   timestamp: <float>
+//	}
 func marshalExemplarJSON(ptr unsafe.Pointer, stream *jsoniter.Stream) {
 	p := *((*exemplar.Exemplar)(ptr))
 	stream.WriteObjectStart()

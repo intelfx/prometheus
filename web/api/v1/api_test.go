@@ -942,6 +942,14 @@ func testEndpoints(t *testing.T, api *API, tr *testTargetRetriever, es storage.E
 		{
 			endpoint: api.series,
 			query: url.Values{
+				"match[]":    []string{`test_metric2`},
+				"only_count": []string{"1"},
+			},
+			response: uint64(1),
+		},
+		{
+			endpoint: api.series,
+			query: url.Values{
 				"match[]": []string{`{foo=""}`},
 			},
 			errType: errorBadData,
