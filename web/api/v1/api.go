@@ -739,6 +739,10 @@ var (
 	maxTimeFormatted = maxTime.Format(time.RFC3339Nano)
 )
 
+type seriesOnlyCountResult struct {
+	MetricsCount uint64 `json:"metrics_count"`
+}
+
 func (api *API) series(r *http.Request) (result apiFuncResult) {
 	if err := r.ParseForm(); err != nil {
 		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrapf(err, "error parsing form values")}, nil, nil}
@@ -809,7 +813,7 @@ func (api *API) series(r *http.Request) (result apiFuncResult) {
 			return apiFuncResult{nil, &apiError{errorExec, set.Err()}, warnings, closer}
 		}
 
-		return apiFuncResult{count, nil, warnings, closer}
+		return apiFuncResult{seriesOnlyCountResult{MetricsCount: count}, nil, warnings, closer}
 	}
 
 	metrics := []labels.Labels{}
