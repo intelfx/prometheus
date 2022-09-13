@@ -765,6 +765,22 @@ func (api *API) series(r *http.Request) (result apiFuncResult) {
 	}
 
 	set := storage.NewMergeSeriesSet(sets, storage.ChainedSeriesMerge)
+
+	if r.Form.Get("only_count") == "1" {
+		var count uint64
+
+		for set.Next() {
+			count++
+		}
+
+		warnings := set.Warnings()
+		if set.Err() != nil {
+			return apiFuncResult{nil, &apiError{errorExec, set.Err()}, warnings, closer}
+		}
+
+		return apiFuncResult{count, nil, warnings, closer}
+
+	}
 	metrics := []labels.Labels{}
 	for set.Next() {
 		metrics = append(metrics, set.At().Labels())
