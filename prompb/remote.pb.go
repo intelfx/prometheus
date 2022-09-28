@@ -914,9 +914,7 @@ func (m *ChunkedReadResponse) Size() (n int) {
 func sovRemote(x uint64) (n int) {
 	return (math_bits.Len64(x|1) + 6) / 7
 }
-func sozRemote(x uint64) (n int) {
-	return sovRemote(uint64((x << 1) ^ uint64((int64(x) >> 63))))
-}
+
 func (m *WriteRequest) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
