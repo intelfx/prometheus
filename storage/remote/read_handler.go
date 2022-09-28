@@ -50,7 +50,7 @@ func NewReadHandler(logger log.Logger, r prometheus.Registerer, queryable storag
 		queryable:                 queryable,
 		config:                    config,
 		remoteReadSampleLimit:     remoteReadSampleLimit,
-		remoteReadGate:            gate.New(remoteReadConcurrencyLimit),
+		remoteReadGate:            gate.New(remoteReadConcurrencyLimit, "read_handler", r),
 		remoteReadMaxBytesInFrame: remoteReadMaxBytesInFrame,
 		chunkPool:                 &sync.Pool{},
 		writeBufPool:              &sync.Pool{},
