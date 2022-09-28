@@ -1457,21 +1457,21 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, annotations.Annotatio
 		mat := make(Matrix, 0, len(selVS.Series)) // Output matrix.
 		offset := durationMilliseconds(selVS.Offset)
 		selRange := durationMilliseconds(sel.Range)
+		bufferRange := selRange
 
 		stepRange := selRange
 		if stepRange > ev.interval {
 			stepRange = ev.interval
 		}
-		bufferRange := selRange
 
 		if e.Func.ExtRange {
 			bufferRange += durationMilliseconds(ev.lookbackDelta)
 			stepRange += durationMilliseconds(ev.lookbackDelta)
 		}
-
 		if e.Func.Name == "xincrease" {
 			bufferRange += durationMilliseconds(1 * 24 * time.Hour)
 		}
+
 		// Reuse objects across steps to save memory allocations.
 		var floats []FPoint
 		var histograms []HPoint
@@ -1479,7 +1479,7 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, annotations.Annotatio
 		inArgs[matrixArgIndex] = inMatrix
 		enh := &EvalNodeHelper{Out: make(Vector, 0, 1)}
 		// Process all the calls for one time series at a time.
-		it := storage.NewBuffer(selRange)
+		it := storage.NewBuffer(bufferRange)
 		var chkIter chunkenc.Iterator
 		for i, s := range selVS.Series {
 			if err := contextDone(ev.ctx, "expression evaluation"); err != nil {
@@ -1531,7 +1531,7 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, annotations.Annotatio
 				inMatrix[0].Floats = floats
 				inMatrix[0].Histograms = histograms
 
-				if metricAppeared != -1 {
+				if enh.metricAppeared == -1 && metricAppeared != -1 {
 					enh.metricAppeared = metricAppeared
 				}
 				enh.Ts = ts
@@ -2083,10 +2083,10 @@ func (ev *evaluator) matrixIterSlice(
 	if functionName == "xincrease" {
 		extMint = mint - durationMilliseconds(4*24*time.Hour)
 	} else {
-		extMint = mint
+		extMint = mint - durationMilliseconds(ev.lookbackDelta)
 	}
 
-	mintFloats, mintHistograms := extMint, extMint
+	mintFloats, mintHistograms := mint, mint
 
 	// First floats...
 	if len(floats) > 0 && floats[len(floats)-1].T >= mint {
