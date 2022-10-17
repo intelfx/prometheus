@@ -234,7 +234,7 @@ func histogramRate(points []HPoint, isCounter bool, metricName string, pos posra
 // It calculates the rate (allowing for counter resets if isCounter is true),
 // taking into account the last sample before the range start, and returns
 // the result as either per-second (if isRate is true) or overall.
-func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHelper, isCounter bool, isRate bool) Vector {
+func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHelper, isCounter, isRate bool) Vector {
 	ms := args[0].(*parser.MatrixSelector)
 	vs := ms.VectorSelector.(*parser.VectorSelector)
 
@@ -308,12 +308,12 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 	if !(isCounter && !isRate) {
 		if points[firstPoint].T <= rangeStart && durationToEnd < averageInterval {
 			adjustToRange := float64(durationMilliseconds(ms.Range))
-			resultValue = resultValue * (adjustToRange / sampledRange)
+			resultValue *= adjustToRange / sampledRange
 		}
 	}
 
 	if isRate {
-		resultValue = resultValue / ms.Range.Seconds()
+		resultValue /= ms.Range.Seconds()
 	}
 
 	return append(enh.Out, Sample{
