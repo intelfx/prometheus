@@ -886,6 +886,16 @@ func getTimeRangesForSelector(s *parser.EvalStmt, n *parser.VectorSelector, path
 	start -= offsetMilliseconds
 	end -= offsetMilliseconds
 
+	f, ok := parser.Functions[extractFuncFromPath(path)]
+	if ok && f.ExtRange {
+		// Buffer more so that we could reasonably
+		// inject a zero if there is only one point.
+		if extractFuncFromPath(path) == "xincrease" {
+			start -= durationMilliseconds(1 * 24 * time.Hour)
+		}
+		start -= durationMilliseconds(ng.lookbackDelta)
+	}
+
 	return start, end
 }
 
@@ -1088,6 +1098,8 @@ type EvalNodeHelper struct {
 	rightSigs    map[string]Sample
 	matchedSigs  map[string]map[uint64]struct{}
 	resultMetric map[string]labels.Labels
+
+	metricAppeared int64
 }
 
 func (enh *EvalNodeHelper) resetBuilder(lbls labels.Labels) {
@@ -1451,9 +1463,20 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, annotations.Annotatio
 		mat := make(Matrix, 0, len(selVS.Series)) // Output matrix.
 		offset := durationMilliseconds(selVS.Offset)
 		selRange := durationMilliseconds(sel.Range)
+
 		stepRange := selRange
 		if stepRange > ev.interval {
 			stepRange = ev.interval
+		}
+		bufferRange := selRange
+
+		if e.Func.ExtRange {
+			bufferRange += durationMilliseconds(ev.lookbackDelta)
+			stepRange += durationMilliseconds(ev.lookbackDelta)
+		}
+
+		if e.Func.Name == "xincrease" {
+			bufferRange += durationMilliseconds(1 * 24 * time.Hour)
 		}
 		// Reuse objects across steps to save memory allocations.
 		var floats []FPoint
@@ -1469,6 +1492,7 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, annotations.Annotatio
 			if err := contextDone(ev.ctx, "expression evaluation"); err != nil {
 				ev.error(err)
 			}
+			enh.metricAppeared = -1
 			ev.currentSamples -= len(floats) + totalHPointSize(histograms)
 			if floats != nil {
 				floats = floats[:0]
@@ -1500,19 +1524,25 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, annotations.Annotatio
 						otherInArgs[j][0].F = otherArgs[j][0].Floats[step].F
 					}
 				}
+				var metricAppeared int64 = -1
 				// Evaluate the matrix selector for this series
 				// for this step, but only if this is the 1st
 				// iteration or no @ modifier has been used.
 				if ts == ev.startTimestamp || selVS.Timestamp == nil {
 					maxt := ts - offset
 					mint := maxt - selRange
-					floats, histograms = ev.matrixIterSlice(it, mint, maxt, floats, histograms)
+					floats, histograms = ev.matrixIterSlice(it, mint, maxt, floats, histograms, e.Func.ExtRange, &metricAppeared, e.Func.Name)
 				}
 				if len(floats)+len(histograms) == 0 {
+					enh.metricAppeared = -1
 					continue
 				}
 				inMatrix[0].Floats = floats
 				inMatrix[0].Histograms = histograms
+
+				if metricAppeared != -1 {
+					enh.metricAppeared = metricAppeared
+				}
 				enh.Ts = ts
 				// Make the function call.
 				outVec, annos := call(inArgs, e.Args, enh)
@@ -2060,7 +2090,7 @@ func (ev *evaluator) matrixSelector(node *parser.MatrixSelector) (Matrix, annota
 			Metric: series[i].Labels(),
 		}
 
-		ss.Floats, ss.Histograms = ev.matrixIterSlice(it, mint, maxt, nil, nil)
+		ss.Floats, ss.Histograms = ev.matrixIterSlice(it, mint, maxt, nil, nil, false, nil, "")
 		totalSize := int64(len(ss.Floats)) + int64(totalHPointSize(ss.Histograms))
 		ev.samplesStats.IncrementSamplesAtTimestamp(ev.startTimestamp, totalSize)
 
@@ -2085,8 +2115,16 @@ func (ev *evaluator) matrixSelector(node *parser.MatrixSelector) (Matrix, annota
 func (ev *evaluator) matrixIterSlice(
 	it *storage.BufferedSeriesIterator, mint, maxt int64,
 	floats []FPoint, histograms []HPoint,
+	extRange bool, metricAppeared *int64, functionName string,
 ) ([]FPoint, []HPoint) {
-	mintFloats, mintHistograms := mint, mint
+	var extMint int64
+	if functionName == "xincrease" {
+		extMint = mint - durationMilliseconds(4*24*time.Hour)
+	} else {
+		extMint = mint
+	}
+
+	mintFloats, mintHistograms := extMint, extMint
 
 	// First floats...
 	if len(floats) > 0 && floats[len(floats)-1].T >= mint {
@@ -2096,8 +2134,25 @@ func (ev *evaluator) matrixIterSlice(
 		//   (b) the number of samples is relatively small.
 		// so a linear search will be as fast as a binary search.
 		var drop int
-		for drop = 0; floats[drop].T < mint; drop++ {
+		if !extRange {
+			for drop = 0; floats[drop].T < mint; drop++ {
+			}
+			// Only append points with timestamps after the last timestamp we have.
+			mint = floats[len(floats)-1].T + 1
+		} else {
+			// This is an argument to an extended range function, first go past mint.
+			for drop = 0; drop < len(floats) && floats[drop].T <= mint; drop++ {
+			}
+			// Then, go back one sample if within lookbackDelta of mint.
+			if drop > 0 && floats[drop-1].T >= extMint {
+				drop--
+			}
+			if floats[len(floats)-1].T >= mint {
+				// Only append points with timestamps after the last timestamp we have.
+				mint = floats[len(floats)-1].T + 1
+			}
 		}
+
 		ev.currentSamples -= drop
 		copy(floats, floats[drop:])
 		floats = floats[:len(floats)-drop]
@@ -2145,6 +2200,8 @@ func (ev *evaluator) matrixIterSlice(
 	}
 
 	buf := it.Buffer()
+	appendedPointBeforeMint := len(histograms) > 0 || len(floats) > 0
+
 loop:
 	for {
 		switch buf.Next() {
@@ -2152,6 +2209,9 @@ loop:
 			break loop
 		case chunkenc.ValFloatHistogram, chunkenc.ValHistogram:
 			t := buf.AtT()
+			if metricAppeared != nil && *metricAppeared == -1 {
+				*metricAppeared = t
+			}
 			// Values in the buffer are guaranteed to be smaller than maxt.
 			if t >= mintHistograms {
 				if histograms == nil {
@@ -2178,16 +2238,32 @@ loop:
 			if value.IsStaleNaN(f) {
 				continue loop
 			}
+			if metricAppeared != nil && *metricAppeared == -1 {
+				*metricAppeared = t
+			}
 			// Values in the buffer are guaranteed to be smaller than maxt.
-			if t >= mintFloats {
-				if ev.currentSamples >= ev.maxSamples {
-					ev.error(ErrTooManySamples(env))
+			if !extRange {
+				if t >= mintFloats {
+					if ev.currentSamples >= ev.maxSamples {
+						ev.error(ErrTooManySamples(env))
+					}
+					ev.currentSamples++
+					if floats == nil {
+						floats = getFPointSlice(16)
+					}
+					floats = append(floats, FPoint{T: t, F: f})
 				}
-				ev.currentSamples++
-				if floats == nil {
-					floats = getFPointSlice(16)
+			} else {
+				if t > mint || !appendedPointBeforeMint {
+					if ev.currentSamples >= ev.maxSamples {
+						ev.error(ErrTooManySamples(env))
+					}
+					floats = append(floats, FPoint{T: t, F: f})
+					ev.currentSamples++
+					appendedPointBeforeMint = true
+				} else {
+					floats[len(floats)-1] = FPoint{T: t, F: f}
 				}
-				floats = append(floats, FPoint{T: t, F: f})
 			}
 		}
 	}
@@ -2214,6 +2290,9 @@ loop:
 		if ev.currentSamples >= ev.maxSamples {
 			ev.error(ErrTooManySamples(env))
 		}
+		if metricAppeared != nil && *metricAppeared == -1 {
+			*metricAppeared = it.AtT()
+		}
 		ev.currentSamples += histograms[n].size()
 
 	case chunkenc.ValFloat:
@@ -2224,6 +2303,9 @@ loop:
 			}
 			if floats == nil {
 				floats = getFPointSlice(16)
+			}
+			if metricAppeared != nil && *metricAppeared == -1 {
+				*metricAppeared = t
 			}
 			floats = append(floats, FPoint{T: t, F: f})
 			ev.currentSamples++

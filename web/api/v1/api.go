@@ -819,6 +819,10 @@ var (
 	maxTimeFormatted = MaxTime.Format(time.RFC3339Nano)
 )
 
+type seriesOnlyCountResult struct {
+	MetricsCount uint64 `json:"metrics_count"`
+}
+
 func (api *API) series(r *http.Request) (result apiFuncResult) {
 	ctx := r.Context()
 
@@ -882,6 +886,22 @@ func (api *API) series(r *http.Request) (result apiFuncResult) {
 	} else {
 		// At this point at least one match exists.
 		set = q.Select(ctx, false, hints, matcherSets[0]...)
+	}
+
+	if r.Form.Get("only_count") == "1" {
+		var count uint64
+
+		for set.Next() {
+			count++
+		}
+
+		warnings := set.Warnings()
+		if set.Err() != nil {
+			return apiFuncResult{nil, &apiError{errorExec, set.Err()}, warnings, closer}
+		}
+
+		return apiFuncResult{seriesOnlyCountResult{MetricsCount: count}, nil, warnings, closer}
+
 	}
 
 	metrics := []labels.Labels{}
