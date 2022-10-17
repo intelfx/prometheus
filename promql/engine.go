@@ -827,6 +827,11 @@ func (ng *Engine) getTimeRangesForSelector(s *parser.EvalStmt, n *parser.VectorS
 
 	f, ok := parser.Functions[extractFuncFromPath(path)]
 	if ok && f.ExtRange {
+		// Buffer more so that we could reasonably
+		// inject a zero if there is only one point.
+		if extractFuncFromPath(path) == "xincrease" {
+			start -= durationMilliseconds(1 * 24 * time.Hour)
+		}
 		start -= durationMilliseconds(ng.lookbackDelta)
 	}
 
@@ -857,16 +862,6 @@ func (ng *Engine) populateSeries(querier storage.Querier, s *parser.EvalStmt) {
 		switch n := node.(type) {
 		case *parser.VectorSelector:
 			start, end := ng.getTimeRangesForSelector(s, n, path, evalRange)
-			fn := extractFuncFromPath(path)
-
-			// Buffer more so that we could reasonably
-			// inject a zero if there is only one point.
-			if fn == "xincrease" {
-				start -= durationMilliseconds(1 * 24 * time.Hour)
-				if start < 0 {
-					start = 0
-				}
-			}
 			interval := ng.getLastSubqueryInterval(path)
 			if interval == 0 {
 				interval = s.Interval
@@ -876,19 +871,10 @@ func (ng *Engine) populateSeries(querier storage.Querier, s *parser.EvalStmt) {
 				End:   end,
 				Step:  durationMilliseconds(interval),
 				Range: durationMilliseconds(evalRange),
-				Func:  fn,
+				Func:  extractFuncFromPath(path),
 			}
 			evalRange = 0
 			hints.By, hints.Grouping = extractGroupsFromPath(path)
-
-			// Include an extra lookbackDelta iff this is the argument to an
-			// extended range function. Extended ranges include one extra
-			// point, this is how far back we need to look for it.
-			f, ok := parser.Functions[hints.Func]
-			if ok && f.ExtRange {
-				hints.Start = hints.Start - durationMilliseconds(ng.lookbackDelta)
-			}
-
 			n.UnexpandedSeriesSet = querier.Select(false, hints, n.LabelMatchers...)
 
 		case *parser.MatrixSelector:
