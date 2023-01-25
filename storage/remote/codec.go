@@ -205,6 +205,7 @@ func NegotiateResponseType(accepted []prompb.ReadRequest_ResponseType) (prompb.R
 	supported := map[prompb.ReadRequest_ResponseType]struct{}{
 		prompb.ReadRequest_SAMPLES:             {},
 		prompb.ReadRequest_STREAMED_XOR_CHUNKS: {},
+		prompb.ReadRequest_COMPACT_XOR_CHUNKS:  {},
 	}
 
 	for _, resType := range accepted {
@@ -224,11 +225,13 @@ func StreamChunkedReadResponses(
 	sortedExternalLabels []prompb.Label,
 	maxBytesInFrame int,
 	marshalPool *sync.Pool,
-) (storage.Warnings, error) {
+	freeImmediately bool,
+) (storage.Warnings, func(), error) {
 	var (
-		chks []prompb.Chunk
-		lbls []prompb.Label
-		iter chunks.Iterator
+		chks         []prompb.Chunk
+		lbls         []prompb.Label
+		iter         chunks.Iterator
+		returnSlices []*[]byte
 	)
 
 	for ss.Next() {
@@ -249,7 +252,7 @@ func StreamChunkedReadResponses(
 			chk := iter.At()
 
 			if chk.Chunk == nil {
-				return ss.Warnings(), fmt.Errorf("StreamChunkedReadResponses: found not populated chunk returned by SeriesSet at ref: %v", chk.Ref)
+				return ss.Warnings(), nil, fmt.Errorf("StreamChunkedReadResponses: found not populated chunk returned by SeriesSet at ref: %v", chk.Ref)
 			}
 
 			// Cut the chunk.
@@ -276,23 +279,30 @@ func StreamChunkedReadResponses(
 
 			b, err := resp.PooledMarshal(marshalPool)
 			if err != nil {
-				return ss.Warnings(), fmt.Errorf("marshal ChunkedReadResponse: %w", err)
+				return ss.Warnings(), nil, fmt.Errorf("marshal ChunkedReadResponse: %w", err)
 			}
 
 			if _, err := stream.Write(b); err != nil {
-				return ss.Warnings(), fmt.Errorf("write to stream: %w", err)
+				return ss.Warnings(), nil, fmt.Errorf("write to stream: %w", err)
 			}
 
-			// We immediately flush the Write() so it is safe to return to the pool.
-			marshalPool.Put(&b)
+			if freeImmediately {
+				marshalPool.Put(&b)
+			} else {
+				returnSlices = append(returnSlices, &b)
+			}
 			chks = chks[:0]
 			frameBytesLeft = maxDataLength
 		}
 		if err := iter.Err(); err != nil {
-			return ss.Warnings(), err
+			return ss.Warnings(), nil, err
 		}
 	}
-	return ss.Warnings(), ss.Err()
+	return ss.Warnings(), func() {
+		for _, rs := range returnSlices {
+			marshalPool.Put(rs)
+		}
+	}, ss.Err()
 }
 
 // MergeLabels merges two sets of sorted proto labels, preferring those in
