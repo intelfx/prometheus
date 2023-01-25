@@ -588,11 +588,13 @@ func TestStreamResponse(t *testing.T) {
 	}}
 	css := newMockChunkSeriesSet(testData)
 	writer := mockWriter{}
-	warning, err := StreamChunkedReadResponses(&writer, 0,
+	warning, _, err := StreamChunkedReadResponses(&writer, 0,
 		css,
 		nil,
 		maxBytesInFrame,
-		&sync.Pool{})
+		&sync.Pool{},
+		true,
+	)
 	require.Nil(t, warning)
 	require.Nil(t, err)
 	expectData := []*prompb.ChunkedSeries{{
