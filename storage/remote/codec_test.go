@@ -302,7 +302,7 @@ func TestNegotiateResponseType(t *testing.T) {
 
 	_, err = NegotiateResponseType([]prompb.ReadRequest_ResponseType{20})
 	require.Error(t, err, "expected error due to not supported requested response types")
-	require.Equal(t, "server does not support any of the requested response types: [20]; supported: map[SAMPLES:{} STREAMED_XOR_CHUNKS:{}]", err.Error())
+	require.Equal(t, "server does not support any of the requested response types: [20]; supported: map[SAMPLES:{} STREAMED_XOR_CHUNKS:{} COMPACT_XOR_CHUNKS:{}]", err.Error())
 }
 
 func TestMergeLabels(t *testing.T) {

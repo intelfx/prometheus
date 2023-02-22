@@ -43,6 +43,8 @@ const (
 	// Content-Type: "application/x-streamed-protobuf; proto=prometheus.ChunkedReadResponse"
 	// Content-Encoding: ""
 	ReadRequest_STREAMED_XOR_CHUNKS ReadRequest_ResponseType = 1
+	// It is like the previous one but series are maximally compacted into frames.
+	// This significantly improves throughput.
 	// Response headers:
 	// Content-Type: "application/x-compact-protobuf; proto=prometheus.ChunkedReadResponse"
 	// Content-Encoding: ""
