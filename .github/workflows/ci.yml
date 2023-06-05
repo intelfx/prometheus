@@ -149,7 +149,7 @@ jobs:
       - name: Lint
         uses: golangci/golangci-lint-action@v3.4.0
         with:
-          args: --verbose
+          args: "--verbose --out-${NO_FUTURE}format colored-line-number"
           version: v1.51.2
   fuzzing:
     uses: ./.github/workflows/fuzzing.yml
