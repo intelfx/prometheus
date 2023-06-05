@@ -13,23 +13,41 @@
 
 package gate
 
-import "context"
+import (
+	"context"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
 
 // A Gate controls the maximum number of concurrently running and waiting queries.
 type Gate struct {
-	ch chan struct{}
+	ch           chan struct{}
+	waitDuration prometheus.Counter
 }
 
 // New returns a query gate that limits the number of queries
 // being concurrently executed.
-func New(length int) *Gate {
+func New(length int, name string, r prometheus.Registerer) *Gate {
 	return &Gate{
 		ch: make(chan struct{}, length),
+		waitDuration: promauto.With(r).NewCounter(prometheus.CounterOpts{
+			Namespace:   "prometheus",
+			Subsystem:   "api",
+			Help:        "Total sum of how long was the wait at the gate before query execution",
+			Name:        "gate_total_wait_duration_seconds",
+			ConstLabels: prometheus.Labels{"name": name},
+		}),
 	}
 }
 
 // Start blocks until the gate has a free spot or the context is done.
 func (g *Gate) Start(ctx context.Context) error {
+	startTime := time.Now()
+	defer func() {
+		g.waitDuration.Add(time.Since(startTime).Seconds())
+	}()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
