@@ -1289,7 +1289,7 @@ func testEndpoints(t *testing.T, api *API, tr *testTargetRetriever, es storage.E
 				"match[]":    []string{`test_metric2`},
 				"only_count": []string{"1"},
 			},
-			response: uint64(1),
+			response: seriesOnlyCountResult{MetricsCount: 1},
 		},
 		{
 			endpoint: api.series,
