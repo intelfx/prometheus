@@ -43,6 +43,8 @@ const (
 	// Content-Type: "application/x-streamed-protobuf; proto=prometheus.ChunkedReadResponse"
 	// Content-Encoding: ""
 	ReadRequest_STREAMED_XOR_CHUNKS ReadRequest_ResponseType = 1
+	// It is like the previous one but series are maximally compacted into frames.
+	// This significantly improves throughput.
 	// Response headers:
 	// Content-Type: "application/x-compact-protobuf; proto=prometheus.ChunkedReadResponse"
 	// Content-Encoding: ""
@@ -914,7 +916,9 @@ func (m *ChunkedReadResponse) Size() (n int) {
 func sovRemote(x uint64) (n int) {
 	return (math_bits.Len64(x|1) + 6) / 7
 }
-
+func sozRemote(x uint64) (n int) {
+	return sovRemote(uint64((x << 1) ^ uint64((int64(x) >> 63))))
+}
 func (m *WriteRequest) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0

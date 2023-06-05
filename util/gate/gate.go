@@ -46,7 +46,7 @@ func New(length int, name string, r prometheus.Registerer) *Gate {
 func (g *Gate) Start(ctx context.Context) error {
 	startTime := time.Now()
 	defer func() {
-		g.waitDuration.Add(float64(time.Since(startTime).Seconds()))
+		g.waitDuration.Add(time.Since(startTime).Seconds())
 	}()
 	select {
 	case <-ctx.Done():
