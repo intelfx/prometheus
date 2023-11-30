@@ -215,7 +215,7 @@ func (h *readHandler) remoteReadCompactXORChunks(ctx context.Context, w http.Res
 				return err
 			}
 
-			querier, err := h.queryable.ChunkQuerier(ctx, query.StartTimestampMs, query.EndTimestampMs)
+			querier, err := h.queryable.ChunkQuerier(query.StartTimestampMs, query.EndTimestampMs)
 			if err != nil {
 				return err
 			}
@@ -244,7 +244,7 @@ func (h *readHandler) remoteReadCompactXORChunks(ctx context.Context, w http.Res
 				wr,
 				int64(i),
 				// The streaming API has to provide the series sorted.
-				querier.Select(true, hints, filteredMatchers...),
+				querier.Select(ctx, true, hints, filteredMatchers...),
 				sortedExternalLabels,
 				h.remoteReadMaxBytesInFrame,
 				h.chunkPool,
