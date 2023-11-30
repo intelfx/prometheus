@@ -235,7 +235,7 @@ func histogramRate(points []HPoint, isCounter bool, metricName string, pos posra
 // It calculates the rate (allowing for counter resets if isCounter is true),
 // taking into account the last sample before the range start, and returns
 // the result as either per-second (if isRate is true) or overall.
-func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHelper, isCounter, isRate bool) Vector {
+func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHelper, isCounter, isRate bool) (Vector, annotations.Annotations) {
 	ms := args[0].(*parser.MatrixSelector)
 	vs := ms.VectorSelector.(*parser.VectorSelector)
 
@@ -243,13 +243,25 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 		samples    = vals[0].(Matrix)[0]
 		rangeStart = enh.Ts - durationMilliseconds(ms.Range+vs.Offset)
 		rangeEnd   = enh.Ts - durationMilliseconds(vs.Offset)
+		annos      annotations.Annotations
 	)
 
-	points := samples.Floats
-	if len(points) == 0 {
-		return enh.Out
+	metricName := samples.Metric.Get(labels.MetricName)
+	if len(samples.Histograms) > 0 && len(samples.Floats) > 0 {
+		return enh.Out, annos.Add(annotations.NewMixedFloatsHistogramsWarning(metricName, args[0].PositionRange()))
 	}
 
+	switch {
+	case len(samples.Histograms) > 0:
+		return enh.Out, annos.Add(annotations.NewHistogramsUnimplementedWarning(metricName, args[0].PositionRange()))
+	case len(samples.Floats) > 0:
+		break
+	default:
+		// TODO: add RangeTooShortWarning
+		return enh.Out, annos
+	}
+
+	points := samples.Floats
 	sameVals := true
 	for i := range points {
 		if i > 0 && points[i-1].F != points[i].F {
@@ -263,7 +275,7 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 		if enh.Ts-durationMilliseconds(vs.Offset) <= until || (vs.Timestamp != nil && *vs.Timestamp <= until) {
 			return append(enh.Out, Sample{
 				F: points[0].F,
-			})
+			}), annos
 		}
 	}
 
@@ -276,7 +288,7 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 		// If the point before the range is too far from rangeStart, drop it.
 		if float64(rangeStart-points[0].T) > averageInterval {
 			if len(points) < 3 {
-				return enh.Out
+				return enh.Out, annos
 			}
 			firstPoint = 1
 			sampledRange = float64(points[len(points)-1].T - points[1].T)
@@ -319,7 +331,7 @@ func extendedRate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 
 	return append(enh.Out, Sample{
 		F: resultValue,
-	})
+	}), annos
 }
 
 // === delta(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
@@ -337,18 +349,18 @@ func funcIncrease(vals []parser.Value, args parser.Expressions, enh *EvalNodeHel
 	return extrapolatedRate(vals, args, enh, true, false)
 }
 
-// === xdelta(Matrix parser.ValueTypeMatrix) Vector ===
-func funcXdelta(vals []parser.Value, args parser.Expressions, enh *EvalNodeHelper) Vector {
+// === xdelta(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
+func funcXdelta(vals []parser.Value, args parser.Expressions, enh *EvalNodeHelper) (Vector, annotations.Annotations) {
 	return extendedRate(vals, args, enh, false, false)
 }
 
-// === xrate(node parser.ValueTypeMatrix) Vector ===
-func funcXrate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHelper) Vector {
+// === xrate(node parser.ValueTypeMatrix) (Vector, Annotations) ===
+func funcXrate(vals []parser.Value, args parser.Expressions, enh *EvalNodeHelper) (Vector, annotations.Annotations) {
 	return extendedRate(vals, args, enh, true, true)
 }
 
-// === xincrease(node parser.ValueTypeMatrix) Vector ===
-func funcXincrease(vals []parser.Value, args parser.Expressions, enh *EvalNodeHelper) Vector {
+// === xincrease(node parser.ValueTypeMatrix) (Vector, Annotations) ===
+func funcXincrease(vals []parser.Value, args parser.Expressions, enh *EvalNodeHelper) (Vector, annotations.Annotations) {
 	return extendedRate(vals, args, enh, true, false)
 }
 
