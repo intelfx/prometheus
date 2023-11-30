@@ -107,6 +107,7 @@ var (
 	BadBucketLabelWarning               = fmt.Errorf("%w: bucket label %q is missing or has a malformed value", PromQLWarning, model.BucketLabel)
 	MixedFloatsHistogramsWarning        = fmt.Errorf("%w: encountered a mix of histograms and floats for metric name", PromQLWarning)
 	MixedClassicNativeHistogramsWarning = fmt.Errorf("%w: vector contains a mix of classic and native histograms for metric name", PromQLWarning)
+	HistogramsUnimplementedWarning      = fmt.Errorf("%w: histograms are not supported for xrate/xdelta/xincrease", PromQLWarning)
 
 	PossibleNonCounterInfo                  = fmt.Errorf("%w: metric might not be a counter, name does not end in _total/_sum/_count/_bucket:", PromQLInfo)
 	HistogramQuantileForcedMonotonicityInfo = fmt.Errorf("%w: input to histogram_quantile needed to be fixed for monotonicity (and may give inaccurate results) for metric name", PromQLInfo)
@@ -156,6 +157,13 @@ func NewMixedClassicNativeHistogramsWarning(metricName string, pos posrange.Posi
 	return annoErr{
 		PositionRange: pos,
 		Err:           fmt.Errorf("%w %q", MixedClassicNativeHistogramsWarning, metricName),
+	}
+}
+
+func NewHistogramsUnimplementedWarning(metricName string, pos posrange.PositionRange) annoErr {
+	return annoErr{
+		PositionRange: pos,
+		Err:           fmt.Errorf("%w %q", HistogramsUnimplementedWarning, metricName),
 	}
 }
 
