@@ -40,7 +40,8 @@ type readHandler struct {
 	remoteReadMaxBytesInFrame int
 	remoteReadGate            *gate.Gate
 	queries                   prometheus.Gauge
-	marshalPool               *sync.Pool
+	chunkPool                 *sync.Pool
+	writeBufPool              *sync.Pool
 }
 
 // NewReadHandler creates a http.Handler that accepts remote read requests and
@@ -51,9 +52,10 @@ func NewReadHandler(logger log.Logger, r prometheus.Registerer, queryable storag
 		queryable:                 queryable,
 		config:                    config,
 		remoteReadSampleLimit:     remoteReadSampleLimit,
-		remoteReadGate:            gate.New(remoteReadConcurrencyLimit),
+		remoteReadGate:            gate.New(remoteReadConcurrencyLimit, "read_handler", r),
 		remoteReadMaxBytesInFrame: remoteReadMaxBytesInFrame,
-		marshalPool:               &sync.Pool{},
+		chunkPool:                 &sync.Pool{},
+		writeBufPool:              &sync.Pool{},
 
 		queries: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "prometheus",
@@ -105,6 +107,8 @@ func (h *readHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch responseType {
+	case prompb.ReadRequest_COMPACT_XOR_CHUNKS:
+		h.remoteReadCompactXORChunks(ctx, w, req, externalLabels, sortedExternalLabels)
 	case prompb.ReadRequest_STREAMED_XOR_CHUNKS:
 		h.remoteReadStreamedXORChunks(ctx, w, req, externalLabels, sortedExternalLabels)
 	default:
@@ -184,6 +188,91 @@ func (h *readHandler) remoteReadSamples(
 	}
 }
 
+func (h *readHandler) remoteReadCompactXORChunks(ctx context.Context, w http.ResponseWriter, req *prompb.ReadRequest, externalLabels map[string]string, sortedExternalLabels []prompb.Label) {
+	w.Header().Set("Content-Type", "application/x-compact-protobuf; proto=prometheus.ChunkedReadResponse")
+
+	f, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "internal http.ResponseWriter does not implement http.Flusher interface", http.StatusInternalServerError)
+		return
+	}
+
+	var writeBuf []byte
+	buf := h.writeBufPool.Get()
+	if buf == nil {
+		writeBuf = make([]byte, 0, h.remoteReadMaxBytesInFrame)
+	} else {
+		writeBuf = *(buf.(*[]byte))
+	}
+	defer h.writeBufPool.Put(&writeBuf)
+
+	for i, query := range req.Queries {
+		if err := func() error {
+			filteredMatchers, err := filterExtLabelsFromMatchers(query.Matchers, externalLabels)
+			if err != nil {
+				return err
+			}
+
+			querier, err := h.queryable.ChunkQuerier(query.StartTimestampMs, query.EndTimestampMs)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if err := querier.Close(); err != nil {
+					level.Warn(h.logger).Log("msg", "Error on chunk querier close", "err", err.Error())
+				}
+			}()
+
+			var hints *storage.SelectHints
+			if query.Hints != nil {
+				hints = &storage.SelectHints{
+					Start:    query.Hints.StartMs,
+					End:      query.Hints.EndMs,
+					Step:     query.Hints.StepMs,
+					Func:     query.Hints.Func,
+					Grouping: query.Hints.Grouping,
+					Range:    query.Hints.RangeMs,
+					By:       query.Hints.By,
+				}
+			}
+
+			wr := NewChunkedCompactWriter(writeBuf, w, f)
+
+			ws, release, err := StreamChunkedReadResponses(
+				wr,
+				int64(i),
+				// The streaming API has to provide the series sorted.
+				querier.Select(ctx, true, hints, filteredMatchers...),
+				sortedExternalLabels,
+				h.remoteReadMaxBytesInFrame,
+				h.chunkPool,
+				false,
+			)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if release != nil {
+					release()
+				}
+			}()
+			defer wr.Close()
+
+			for _, w := range ws {
+				level.Warn(h.logger).Log("msg", "Warnings on chunked remote read query", "warnings", w.Error())
+			}
+			return nil
+		}(); err != nil {
+			if httpErr, ok := err.(HTTPError); ok {
+				http.Error(w, httpErr.Error(), httpErr.Status())
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
 func (h *readHandler) remoteReadStreamedXORChunks(ctx context.Context, w http.ResponseWriter, req *prompb.ReadRequest, externalLabels map[string]string, sortedExternalLabels []prompb.Label) {
 	w.Header().Set("Content-Type", "application/x-streamed-protobuf; proto=prometheus.ChunkedReadResponse")
 
@@ -223,14 +312,15 @@ func (h *readHandler) remoteReadStreamedXORChunks(ctx context.Context, w http.Re
 				}
 			}
 
-			ws, err := StreamChunkedReadResponses(
+			ws, _, err := StreamChunkedReadResponses(
 				NewChunkedWriter(w, f),
 				int64(i),
 				// The streaming API has to provide the series sorted.
 				querier.Select(ctx, true, hints, filteredMatchers...),
 				sortedExternalLabels,
 				h.remoteReadMaxBytesInFrame,
-				h.marshalPool,
+				h.chunkPool,
+				true,
 			)
 			if err != nil {
 				return err
