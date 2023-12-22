@@ -21,6 +21,9 @@ import (
 	"github.com/go-kit/log/level"
 	"github.com/pkg/errors"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+
 	"github.com/prometheus/prometheus/model/exemplar"
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
@@ -389,6 +392,12 @@ func (a *headAppender) Append(ref storage.SeriesRef, lset labels.Labels, t int64
 	return storage.SeriesRef(s.ref), nil
 }
 
+var duplicatedSeries = promauto.With(prometheus.DefaultRegisterer).NewCounter(
+	prometheus.CounterOpts{
+		Name: "prometheus_head_duplicate_samples_total",
+	},
+)
+
 // appendable checks whether the given sample is valid for appending to the series. (if we return false and no error)
 // The sample belongs to the out of order chunk if we return true and no error.
 // An error signifies the sample cannot be handled.
@@ -411,6 +420,8 @@ func (s *memSeries) appendable(t int64, v float64, headMaxt, minValidTime, oooTi
 			if math.Float64bits(s.lastValue) != math.Float64bits(v) {
 				return false, 0, storage.ErrDuplicateSampleForTimestamp
 			}
+
+			duplicatedSeries.Inc()
 			// Sample is identical (ts + value) with most current (highest ts) sample in sampleBuf.
 			return false, 0, nil
 		}
