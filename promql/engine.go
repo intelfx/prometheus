@@ -887,7 +887,7 @@ func (ng *Engine) getTimeRangesForSelector(s *parser.EvalStmt, n *parser.VectorS
 		if extractFuncFromPath(path) == "xincrease" {
 			start -= durationMilliseconds(1 * 24 * time.Hour)
 		}
-		start -= durationMilliseconds(ng.lookbackDelta)
+		start -= durationMilliseconds(s.LookbackDelta)
 	}
 
 	return start, end
